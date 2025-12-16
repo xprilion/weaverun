@@ -1,5 +1,5 @@
-# OpenAI-compatible API paths (SDK sends these without /v1 prefix)
-OPENAI_PATHS = frozenset([
+# OpenAI-compatible API path suffixes
+OPENAI_SUFFIXES = frozenset([
     "/chat/completions",
     "/completions",
     "/responses",
@@ -21,11 +21,13 @@ def is_openai_compatible(path: str) -> bool:
     
     normalized = path if path.startswith("/") else f"/{path}"
     
-    if normalized in OPENAI_PATHS:
+    # Strip /v1 prefix if present (e.g., /v1/chat/completions -> /chat/completions)
+    if normalized.startswith("/v1"):
+        normalized = normalized[3:]  # Remove /v1
+    
+    # Check exact match
+    if normalized in OPENAI_SUFFIXES:
         return True
     
-    # Handle query params and sub-paths
-    return any(
-        normalized.startswith(f"{p}?") or normalized.startswith(f"{p}/")
-        for p in OPENAI_PATHS
-    )
+    # Handle query params (e.g., /chat/completions?stream=true)
+    return any(normalized.startswith(f"{p}?") for p in OPENAI_SUFFIXES)

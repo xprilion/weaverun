@@ -1,22 +1,16 @@
 # `weaverun`
 
-Run any application and automatically capture **OpenAI-compatible API traffic** to **Weights & Biases Weave** - without modifying app code.
-
-`weaverun` works as a **process wrapper**: it runs your command, transparently routes only that process’s OpenAI-compatible requests through a local proxy, and logs them to Weave.
+Run any application and automatically capture **OpenAI-compatible API traffic** to **Weights & Biases Weave** — without modifying app code.
 
 ---
 
-## What this is for
+## Install
 
-* Observing LLM calls made by **any app** (Python, Node, etc.)
-* Supporting **any OpenAI-compatible provider** (OpenAI, Azure, Together, Groq, vLLM…)
-* Capturing requests + responses for **debugging, evals, and tracing**
-* Zero application code changes
+```bash
+pip install weaverun
+```
 
----
-
-## Install (local dev)
-
+Or from source:
 ```bash
 git clone https://github.com/xprilion/weaverun
 cd weaverun
@@ -25,83 +19,100 @@ pip install -e .
 
 ---
 
-## Usage
-
-Run your app exactly as before - just prefix with `weaverun`:
+## Quick Start
 
 ```bash
+# Set your Weave project
+export WEAVE_PROJECT=your-entity/your-project
+
+# Run your app
 weaverun python main.py
-weaverun pnpm dev
-weaverun uvicorn app:app
 ```
 
-That’s it.
-
-Any OpenAI-compatible API calls made by this process will be logged to **Weave**.
+Output:
+```
+weaverun: Loaded .env
+weaverun: Starting proxy on port 7777...
+weaverun: Proxy ready
+weaverun: Dashboard: http://127.0.0.1:7777/__weaverun__
+weaverun: Running: python main.py
+```
 
 ---
 
-## Providers & configuration
+## Configuration
 
-`weaverun` respects your existing configuration.
+### Environment Variables
 
-If you already set:
+| Variable | Description |
+|----------|-------------|
+| `WEAVE_PROJECT` | Weave project (format: `entity/project` or `project`) |
+| `WEAVE_PROJECT_ID` | Alternative: just the project ID |
+| `WEAVE_ENTITY` | Optional: entity for `WEAVE_PROJECT_ID` |
+| `OPENAI_BASE_URL` | Your LLM provider URL (preserved and forwarded) |
+
+weaverun automatically loads `.env` from the current directory.
+
+---
+
+## Dashboard
+
+While your app runs, open the dashboard to see requests in real-time:
+
+```
+http://127.0.0.1:7777/__weaverun__
+```
+
+Features:
+- Live request stream
+- Status codes, latency, model
+- Click-through to Weave traces
+
+---
+
+## Hardcoded Base URLs
+
+If your app hardcodes `base_url` in the client constructor (e.g., Ollama):
+
+```python
+client = OpenAI(base_url="http://localhost:11434/v1", ...)
+```
+
+Use `--proxy-all` to route all HTTP traffic through the proxy:
 
 ```bash
-OPENAI_BASE_URL=https://api.example.com
-OPENAI_API_KEY=...
+weaverun --proxy-all python ollama-test.py
 ```
 
-`weaverun` will:
+---
 
-* preserve the original provider
-* route traffic through a local proxy
-* forward requests unchanged
+## How It Works
 
-No vendor lock-in. No rewrites.
+1. Starts a local HTTP proxy
+2. Launches your command as a child process
+3. Sets `OPENAI_BASE_URL` to route SDK traffic through the proxy
+4. Proxy forwards to original upstream and logs OpenAI-compatible calls to Weave
 
 ---
 
-## How it works (high level)
+## Supported Providers
 
-1. `weaverun` starts a **local HTTP proxy**
-2. It launches your command as a **child process**
-3. It injects environment variables so only that process routes traffic through the proxy
-4. The proxy:
-
-   * forwards requests to the original upstream
-   * detects OpenAI-compatible APIs by path/schema
-   * logs request + response data to Weave
-
-Everything else is passed through untouched.
+Any OpenAI-compatible API:
+- OpenAI
+- Azure OpenAI
+- Ollama
+- Together, Groq, Fireworks
+- vLLM, LiteLLM
+- Any OpenAI-compatible endpoint
 
 ---
 
-## Safety & best practices
+## Safety
 
-`weaverun` is designed to be safe by default:
-
-* 🔒 **No TLS interception**
-* 🔑 **API keys are never modified**
-* 🧠 **Only OpenAI-compatible requests are parsed**
-* 🔀 **Non-LLM traffic is transparently forwarded**
-* 🧪 Scope is limited to the wrapped process only
-
-### Recommended usage
-
-* Use in **local dev, staging, CI, or eval runs**
-* Avoid long-running prod usage until redaction rules are configured
-* Treat logged prompts/responses as **sensitive data**
-
----
-
-## Current limitations (MVP)
-
-* Streaming (SSE) responses are logged at request/response level only
-* No automatic prompt or PII redaction yet
-* No token or cost accounting
-
-These are intentional and will be added incrementally.
+- 🔒 No TLS interception
+- 🔑 API keys unchanged
+- 🧠 Only OpenAI-compatible requests logged
+- 🔀 Non-LLM traffic forwarded untouched
 
 ---
 

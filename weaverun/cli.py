@@ -5,9 +5,11 @@ import sys
 import threading
 import time
 import uuid
+from pathlib import Path
 
 import typer
 import uvicorn
+from dotenv import load_dotenv
 
 app = typer.Typer(add_completion=False)
 
@@ -16,6 +18,14 @@ def _log(msg: str, err: bool = False):
     """Print weaverun status message."""
     stream = sys.stderr if err else sys.stdout
     print(f"\033[36mweaverun:\033[0m {msg}", file=stream)
+
+
+def _load_dotenv():
+    """Load .env file from current directory if it exists."""
+    env_path = Path.cwd() / ".env"
+    if env_path.exists():
+        load_dotenv(env_path)
+        _log(f"Loaded {env_path}")
 
 
 def _find_free_port(start: int = 7777, attempts: int = 100) -> int:
@@ -57,23 +67,20 @@ def _start_proxy(port: int):
 
 
 @app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
-def run(ctx: typer.Context):
+def run(
+    ctx: typer.Context,
+    proxy_all: bool = typer.Option(
+        False, "--proxy-all", "-p",
+        help="Route ALL HTTP traffic through proxy (for apps with hardcoded base_url)"
+    ),
+):
     """Wrap a command and log OpenAI-compatible API calls to Weave."""
     cmd = ctx.args
     if not cmd:
         raise typer.BadParameter("No command provided")
 
-    # Validate required env vars
-    if not os.environ.get("WANDB_API_KEY"):
-        _log("Error: WANDB_API_KEY not set", err=True)
-        raise typer.Exit(1)
-    
-    project_id = os.environ.get("WANDB_PROJECT_ID")
-    if not project_id:
-        _log("Error: WANDB_PROJECT_ID not set", err=True)
-        raise typer.Exit(1)
+    _load_dotenv()
 
-    # Find available port
     try:
         proxy_port = _find_free_port()
     except RuntimeError as e:
@@ -82,18 +89,16 @@ def run(ctx: typer.Context):
 
     _log(f"Starting proxy on port {proxy_port}...")
     
-    # Start proxy in daemon thread
     proxy_thread = threading.Thread(target=_start_proxy, args=(proxy_port,), daemon=True)
     proxy_thread.start()
 
-    # Wait for proxy readiness
     if not _wait_for_port(proxy_port, timeout=10.0):
         _log("Error: Proxy failed to start", err=True)
         raise typer.Exit(1)
 
     _log("Proxy ready")
+    _log(f"Dashboard: http://127.0.0.1:{proxy_port}/__weaverun__")
 
-    # Build child environment
     env = os.environ.copy()
     
     # Preserve original base URL for forwarding
@@ -101,14 +106,21 @@ def run(ctx: typer.Context):
     if original_base:
         env["WEAVE_ORIGINAL_OPENAI_BASE_URL"] = original_base
 
-    # Route SDK traffic through proxy (only OPENAI_BASE_URL, not HTTP_PROXY)
+    # Route SDK traffic through proxy
     env["OPENAI_BASE_URL"] = f"http://127.0.0.1:{proxy_port}"
     env["WEAVE_RUN_ID"] = str(uuid.uuid4())
     env["WEAVE_APP_NAME"] = cmd[0]
 
+    # For apps that hardcode base_url, use HTTP_PROXY to intercept
+    if proxy_all:
+        _log("Proxy mode: ALL HTTP traffic (--proxy-all)")
+        env["HTTP_PROXY"] = f"http://127.0.0.1:{proxy_port}"
+        env["HTTPS_PROXY"] = f"http://127.0.0.1:{proxy_port}"
+        # Only exclude the proxy itself from proxying
+        env["NO_PROXY"] = f"127.0.0.1:{proxy_port}"
+
     _log(f"Running: {' '.join(cmd)}")
 
-    # Execute child process
     try:
         result = subprocess.run(cmd, env=env)
         exit_code = result.returncode

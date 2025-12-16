@@ -9,6 +9,7 @@ dependencies = [
   "httpx",
   "typer",
   "weave",
+  "python-dotenv",
 ]
 
 [project.scripts]
