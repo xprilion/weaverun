@@ -1,0 +1,15 @@
+[project]
+name = "weaverun"
+version = "0.1.0"
+description = "Run any app and capture OpenAI-compatible traffic to Weave"
+requires-python = ">=3.9"
+dependencies = [
+  "fastapi",
+  "uvicorn",
+  "httpx",
+  "typer",
+  "weave",
+]
+
+[project.scripts]
+weaverun = "weaverun.cli:app"
