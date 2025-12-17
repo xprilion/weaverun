@@ -41,6 +41,7 @@ class LogTask:
     status_code: int
     latency_ms: float
     model: str | None
+    provider: str | None = None
     trace_callback: Callable[[str | None], None] | None = None
 
 
@@ -92,11 +93,14 @@ class WeaveLogger:
                 return None
             
             import weave
+            # Use provider name in op for better organization
+            provider = task.provider or "api"
             call = weave.log_call(
-                op=f"openai{task.path}",
+                op=f"{provider}{task.path}",
                 inputs={"path": task.path, "model": task.model, "request": task.request_json},
                 output={"status_code": task.status_code, "response": task.response_json},
                 attributes={
+                    "provider": task.provider,
                     "upstream": task.upstream,
                     "latency_ms": task.latency_ms,
                     "run_id": os.getenv("WEAVE_RUN_ID"),
@@ -164,6 +168,7 @@ class WeaveLogger:
         status_code: int,
         latency_ms: float,
         model: str | None,
+        provider: str | None = None,
         trace_callback: Callable[[str | None], None] | None = None,
     ):
         """Queue a log entry for async processing. Non-blocking, fire-and-forget."""
@@ -175,6 +180,7 @@ class WeaveLogger:
             status_code=status_code,
             latency_ms=latency_ms,
             model=model,
+            provider=provider,
             trace_callback=trace_callback,
         )
         try:

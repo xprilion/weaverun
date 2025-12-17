@@ -11,7 +11,7 @@ from starlette.responses import StreamingResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .dashboard import router as dashboard_router, add_log as dashboard_add_log, update_trace_url, update_log_entry
-from .detect import is_openai_compatible
+from .detect import is_capturable_endpoint
 from .upstream import resolve_upstream, extract_path
 from .weave_log import WeaveLogger
 
@@ -136,16 +136,16 @@ async def _do_proxy(request: Request, upstream_url: str):
     body = await request.body()
     headers = {k: v for k, v in request.headers.items() if k.lower() not in ("host", "content-length")}
     
-    # Check if this is a streaming request
+    # Check if this is a streaming request and if endpoint should be captured
     is_streaming = _is_streaming_request(body)
-    is_openai = is_openai_compatible(api_path)
+    should_capture, provider = is_capturable_endpoint(api_path, upstream_url)
     
     start = time.perf_counter()
 
     if is_streaming:
         # Handle streaming request
         return await _do_streaming_proxy(
-            request, upstream_url, api_path, body, headers, start, is_openai
+            request, upstream_url, api_path, body, headers, start, should_capture, provider
         )
     
     # Non-streaming request
@@ -168,8 +168,8 @@ async def _do_proxy(request: Request, upstream_url: str):
         print(f"weaverun: Request failed: {e}", file=sys.stderr)
         return Response(content=b"Request failed", status_code=502)
 
-    # Log OpenAI-compatible calls
-    if is_openai:
+    # Log capturable API calls (OpenAI, Anthropic, Gemini, Bedrock, Azure, etc.)
+    if should_capture:
         req_json = _parse_json(body)
         resp_json = _parse_json(content)
         model = req_json.get("model") if isinstance(req_json, dict) else None
@@ -186,6 +186,7 @@ async def _do_proxy(request: Request, upstream_url: str):
             trace_pending=_logger is not None,
             request_body=req_json,
             response_body=resp_json,
+            provider=provider,
         )
         
         # Queue Weave logging in background (non-blocking)
@@ -199,6 +200,7 @@ async def _do_proxy(request: Request, upstream_url: str):
                 status_code=resp.status_code,
                 latency_ms=latency_ms,
                 model=model,
+                provider=provider,
                 trace_callback=lambda url, eid=entry_id: update_trace_url(eid, url),
             )
 
@@ -217,16 +219,17 @@ async def _do_streaming_proxy(
     body: bytes,
     headers: dict,
     start: float,
-    is_openai: bool,
+    should_capture: bool,
+    provider: str | None,
 ):
     """Handle streaming proxy request."""
-    req_json = _parse_json(body) if is_openai else None
+    req_json = _parse_json(body) if should_capture else None
     model = req_json.get("model") if isinstance(req_json, dict) else None
     
     # For streaming, we log immediately with placeholder response
     # and update with full content when stream completes
     entry_id = None
-    if is_openai:
+    if should_capture:
         entry_id = dashboard_add_log(
             path=api_path,
             model=model,
@@ -237,6 +240,7 @@ async def _do_streaming_proxy(
             trace_pending=_logger is not None,
             request_body=req_json,
             response_body={"_streaming": True, "_status": "in_progress"},
+            provider=provider,
         )
     
     # State shared between generator and completion callback
@@ -277,7 +281,7 @@ async def _do_streaming_proxy(
             yield b"data: {\"error\": \"Request failed\"}\n\n"
         finally:
             # Log completed stream
-            if is_openai and entry_id:
+            if should_capture and entry_id:
                 end_time = time.perf_counter()
                 ttfb = ((state["first_chunk_time"] or end_time) - start) * 1000
                 total_time = (end_time - start) * 1000
@@ -306,6 +310,7 @@ async def _do_streaming_proxy(
                         status_code=state["status_code"],
                         latency_ms=ttfb,
                         model=model,
+                        provider=provider,
                         trace_callback=lambda url, eid=entry_id: update_trace_url(eid, url),
                     )
     

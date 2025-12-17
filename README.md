@@ -1,6 +1,8 @@
 # `weaverun`
 
-Run any application and automatically capture **OpenAI-compatible API traffic** to **Weights & Biases Weave** — without modifying app code.
+Run any application and automatically capture **LLM API traffic** to **Weights & Biases Weave** — without modifying app code.
+
+Supports **OpenAI, Anthropic, Gemini, AWS Bedrock, Azure OpenAI, W&B Inference**, and many more.
 
 ---
 
@@ -64,8 +66,9 @@ http://127.0.0.1:7777/__weaverun__
 ```
 
 Features:
-- Live request stream
-- Status codes, latency, model
+- Live request stream with SSE support
+- Status codes, latency, model, provider badges
+- Expandable request/response bodies with syntax highlighting
 - Click-through to Weave traces
 
 ---
@@ -88,22 +91,58 @@ weaverun --proxy-all python ollama-test.py
 
 ## How It Works
 
-1. Starts a local HTTP proxy
+1. Starts a local HTTP proxy with real-time dashboard
 2. Launches your command as a child process
 3. Sets `OPENAI_BASE_URL` to route SDK traffic through the proxy
-4. Proxy forwards to original upstream and logs OpenAI-compatible calls to Weave
+4. Proxy forwards to original upstream and logs LLM calls to Weave asynchronously
+5. Streaming responses are forwarded in real-time while being captured for logging
 
 ---
 
 ## Supported Providers
 
-Any OpenAI-compatible API:
-- OpenAI
-- Azure OpenAI
-- Ollama
-- Together, Groq, Fireworks
-- vLLM, LiteLLM
-- Any OpenAI-compatible endpoint
+Auto-detected out of the box:
+
+| Provider | Endpoints |
+|----------|-----------|
+| **OpenAI** | `/v1/chat/completions`, `/v1/embeddings`, etc. |
+| **Anthropic** | `/v1/messages`, `/v1/complete` |
+| **Google Gemini** | `/v1beta/models/*:generateContent` |
+| **AWS Bedrock** | `/model/*/invoke`, `/model/*/converse` |
+| **Azure OpenAI** | `/openai/deployments/*/chat/completions` |
+| **W&B Inference** | `*.wandb.ai` endpoints |
+| **Cohere** | `/v1/chat`, `/v1/generate`, `/v1/embed` |
+| **Mistral** | `/v1/chat/completions` |
+| **Groq** | `/v1/chat/completions` |
+| **Together** | `/v1/chat/completions`, `/inference` |
+| **Fireworks** | `/inference/v1/chat/completions` |
+| **Perplexity** | `/chat/completions` |
+| **Replicate** | `/v1/predictions` |
+| **Ollama** | `/api/chat`, `/api/generate` |
+
+---
+
+## Custom Providers
+
+Add your own provider patterns via `weaverun.config.yaml`:
+
+```yaml
+providers:
+  - name: my_llm
+    path_patterns:
+      - "/api/v1/generate"
+      - "/api/chat"
+    host_patterns:
+      - "llm\\.mycompany\\.com"
+    is_regex: true
+```
+
+Config is loaded from:
+1. `WEAVERUN_CONFIG` env var
+2. `./weaverun.config.yaml`
+3. `~/.weaverun.config.yaml`
+
+See `weaverun.config.example.yaml` for full options.
 
 ---
 
@@ -111,8 +150,9 @@ Any OpenAI-compatible API:
 
 - 🔒 No TLS interception
 - 🔑 API keys unchanged
-- 🧠 Only OpenAI-compatible requests logged
+- 🧠 Only known LLM endpoints logged (configurable)
 - 🔀 Non-LLM traffic forwarded untouched
+- ⚡ Async logging — zero added latency
 
 ---
 
