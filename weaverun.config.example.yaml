@@ -1,0 +1,140 @@
+# weaverun Configuration File
+# Copy this to weaverun.config.yaml in your project directory or ~/.weaverun.config.yaml
+# 
+# weaverun will automatically load config from:
+#   1. WEAVERUN_CONFIG environment variable (path to config file)
+#   2. ./weaverun.config.yaml (current directory)
+#   3. ~/.weaverun.config.yaml (home directory)
+
+# ============================================================================
+# CUSTOM PROVIDERS
+# ============================================================================
+# Add your own provider patterns here. Custom providers take priority over
+# built-in ones, so you can override default behavior.
+#
+# Each provider needs:
+#   - name: Identifier shown in dashboard and logs
+#   - path_patterns: List of URL path patterns to match (regex by default)
+#   - host_patterns: (Optional) List of host patterns to match
+#   - is_regex: (Optional) Set to false for simple suffix matching
+
+providers:
+  # Example: Custom internal LLM service
+  - name: internal_llm
+    path_patterns:
+      - "/api/v1/generate"
+      - "/api/v1/chat"
+      - "/api/v1/embed"
+    host_patterns:
+      - "llm\\.internal\\.company\\.com"
+      - "localhost:8080"
+    is_regex: true
+
+  # Example: LiteLLM proxy
+  - name: litellm
+    path_patterns:
+      - "/chat/completions"
+      - "/completions"
+      - "/embeddings"
+    host_patterns:
+      - "localhost:4000"
+      - "litellm\\..*"
+    is_regex: true
+
+  # Example: vLLM server
+  - name: vllm
+    path_patterns:
+      - "/v1/chat/completions"
+      - "/v1/completions"
+    host_patterns:
+      - "localhost:8000"
+    is_regex: true
+
+  # Example: Simple suffix matching (no regex)
+  - name: simple_api
+    path_patterns:
+      - "/predict"
+      - "/inference"
+    is_regex: false
+
+# ============================================================================
+# DISABLE BUILT-IN PROVIDERS
+# ============================================================================
+# Uncomment to disable specific built-in providers.
+# Built-in providers: openai, anthropic, gemini, bedrock, azure_openai,
+#                     wandb_inference, cohere, mistral, groq, together,
+#                     replicate, fireworks, perplexity, ollama
+
+# disable_providers:
+#   - ollama      # Disable local Ollama detection
+#   - replicate   # Disable Replicate API detection
+
+# ============================================================================
+# CAPTURE ALL REQUESTS
+# ============================================================================
+# Set to true to capture ALL requests (useful for debugging or custom proxies).
+# Warning: This will log everything, including non-LLM traffic!
+
+# capture_all_requests: false
+
+# ============================================================================
+# BUILT-IN PROVIDER PATTERNS (for reference)
+# ============================================================================
+# These are automatically included - no need to add them.
+#
+# openai:
+#   - /v1/chat/completions, /v1/completions, /v1/embeddings, etc.
+#   - api.openai.com (and any host for OpenAI-compatible APIs)
+#
+# anthropic:
+#   - /v1/messages, /v1/complete
+#   - api.anthropic.com
+#
+# gemini:
+#   - /v1beta/models/*:generateContent, /v1beta/models/*:streamGenerateContent
+#   - generativelanguage.googleapis.com, *-aiplatform.googleapis.com
+#
+# bedrock:
+#   - /model/*/invoke, /model/*/converse, /model/*/invoke-with-response-stream
+#   - bedrock-runtime.*.amazonaws.com
+#
+# azure_openai:
+#   - /openai/deployments/*/chat/completions, /openai/deployments/*/embeddings
+#   - *.openai.azure.com, *.azure-api.net
+#
+# wandb_inference:
+#   - /v1/chat/completions, /v1/completions
+#   - *.wandb.ai
+#
+# cohere:
+#   - /v1/chat, /v1/generate, /v1/embed
+#   - api.cohere.ai, api.cohere.com
+#
+# mistral:
+#   - /v1/chat/completions, /v1/embeddings
+#   - api.mistral.ai
+#
+# groq:
+#   - /v1/chat/completions
+#   - api.groq.com
+#
+# together:
+#   - /v1/chat/completions, /v1/completions, /inference
+#   - api.together.xyz
+#
+# replicate:
+#   - /v1/predictions, /v1/models/*/predictions
+#   - api.replicate.com
+#
+# fireworks:
+#   - /inference/v1/chat/completions
+#   - api.fireworks.ai
+#
+# perplexity:
+#   - /chat/completions
+#   - api.perplexity.ai
+#
+# ollama:
+#   - /api/generate, /api/chat, /v1/chat/completions
+#   - localhost:11434
+

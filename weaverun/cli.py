@@ -20,12 +20,22 @@ def _log(msg: str, err: bool = False):
     print(f"\033[36mweaverun:\033[0m {msg}", file=stream)
 
 
-def _load_dotenv():
-    """Load .env file from current directory if it exists."""
+def _load_dotenv() -> bool:
+    """Load .env file from current directory if it exists. Returns True if OPENAI_BASE_URL was found."""
     env_path = Path.cwd() / ".env"
+    has_base_url = False
     if env_path.exists():
         load_dotenv(env_path)
         _log(f"Loaded {env_path}")
+        # Check if .env has OPENAI_BASE_URL which might conflict
+        try:
+            with open(env_path) as f:
+                content = f.read()
+                if "OPENAI_BASE_URL" in content:
+                    has_base_url = True
+        except Exception:
+            pass
+    return has_base_url
 
 
 def _find_free_port(start: int = 7777, attempts: int = 100) -> int:
@@ -79,7 +89,10 @@ def run(
     if not cmd:
         raise typer.BadParameter("No command provided")
 
-    _load_dotenv()
+    env_has_base_url = _load_dotenv()
+    if env_has_base_url:
+        _log("⚠️  Warning: .env contains OPENAI_BASE_URL which may override proxy settings")
+        _log("   For Next.js/Node apps, consider removing it from .env temporarily")
 
     try:
         proxy_port = _find_free_port()

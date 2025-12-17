@@ -30,6 +30,11 @@ class LogEntry:
     trace_pending: bool
     request_body: dict | list | None
     response_body: dict | list | None
+    provider: str | None = None
+    # Trace context for hierarchical grouping
+    trace_id: str | None = None       # Groups related calls together
+    span_id: str | None = None        # This call's unique span
+    parent_span_id: str | None = None # Parent call's span (for tree structure)
 
 
 @dataclass
@@ -51,9 +56,16 @@ def add_log(
     trace_pending: bool = False,
     request_body: dict | list | None = None,
     response_body: dict | list | None = None,
+    provider: str | None = None,
+    trace_id: str | None = None,
+    span_id: str | None = None,
+    parent_span_id: str | None = None,
 ) -> str:
     """Add log entry and notify subscribers. Returns the entry ID."""
     entry_id = str(uuid.uuid4())[:8]
+    # Generate span_id if not provided (use entry_id)
+    if span_id is None:
+        span_id = entry_id
     entry = LogEntry(
         id=entry_id,
         timestamp=datetime.now().strftime("%H:%M:%S"),
@@ -67,6 +79,10 @@ def add_log(
         trace_pending=trace_pending,
         request_body=request_body,
         response_body=response_body,
+        provider=provider,
+        trace_id=trace_id,
+        span_id=span_id,
+        parent_span_id=parent_span_id,
     )
     _logs.append(entry)
     _logs_by_id[entry_id] = entry
@@ -241,7 +257,7 @@ DASHBOARD_HTML = """
         
         .log {
             display: grid;
-            grid-template-columns: 24px 70px 60px 1fr auto auto auto auto;
+            grid-template-columns: 24px 70px 60px auto 1fr auto auto auto auto;
             gap: 16px;
             align-items: center;
             padding: 12px 16px;
@@ -294,6 +310,28 @@ DASHBOARD_HTML = """
             color: #8b5cf6;
             font-size: 12px;
         }
+        
+        .provider {
+            font-size: 10px;
+            padding: 2px 6px;
+            border-radius: 3px;
+            text-transform: uppercase;
+            font-weight: 600;
+            letter-spacing: 0.03em;
+        }
+        
+        .provider-openai { background: #1a3a2a; color: #4ade80; }
+        .provider-anthropic { background: #2d1f1f; color: #f59e0b; }
+        .provider-gemini { background: #1e293b; color: #60a5fa; }
+        .provider-bedrock { background: #1c1917; color: #fb923c; }
+        .provider-azure_openai { background: #172554; color: #38bdf8; }
+        .provider-wandb_inference { background: #1e1b4b; color: #a78bfa; }
+        .provider-cohere { background: #1e1b2e; color: #c084fc; }
+        .provider-mistral { background: #1f2937; color: #f472b6; }
+        .provider-groq { background: #0f172a; color: #22d3ee; }
+        .provider-together { background: #1a1a2e; color: #818cf8; }
+        .provider-ollama { background: #18181b; color: #71717a; }
+        .provider-custom { background: #27272a; color: #a1a1aa; }
         
         .status-code {
             padding: 2px 8px;
@@ -457,6 +495,46 @@ DASHBOARD_HTML = """
             color: #52525b;
         }
         
+        /* Trace grouping styles */
+        .trace-badge {
+            font-size: 9px;
+            padding: 1px 4px;
+            border-radius: 3px;
+            background: #1e293b;
+            color: #64748b;
+            font-family: monospace;
+            margin-left: 8px;
+        }
+        
+        .trace-group {
+            border-left: 2px solid #3b82f6;
+            margin-left: 8px;
+            padding-left: 8px;
+        }
+        
+        .trace-child {
+            position: relative;
+        }
+        
+        .trace-child::before {
+            content: '';
+            position: absolute;
+            left: -10px;
+            top: 50%;
+            width: 8px;
+            height: 1px;
+            background: #3b82f6;
+        }
+        
+        .trace-connector {
+            width: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #3b82f6;
+            font-size: 10px;
+        }
+        
         @media (max-width: 900px) {
             .log {
                 grid-template-columns: 24px 1fr auto auto;
@@ -514,6 +592,12 @@ DASHBOARD_HTML = """
             return `<span class="trace-none">-</span>`;
         }
         
+        function providerBadge(provider) {
+            if (!provider) return '<span class="provider provider-custom">api</span>';
+            const cls = 'provider-' + provider.toLowerCase().replace(/[^a-z0-9]/g, '_');
+            return `<span class="provider ${cls}">${escapeHtml(provider)}</span>`;
+        }
+        
         function syntaxHighlight(json) {
             if (json === null || json === undefined) {
                 return '<span class="empty-body">No body</span>';
@@ -560,6 +644,16 @@ DASHBOARD_HTML = """
             wrapper.classList.toggle('expanded');
         }
         
+        // Track traces for grouping
+        const traceGroups = new Map();
+        
+        function traceBadge(entry) {
+            if (!entry.trace_id) return '';
+            const shortId = entry.trace_id.substring(0, 8);
+            const hasParent = entry.parent_span_id ? ' ↳' : '';
+            return `<span class="trace-badge" title="Trace: ${entry.trace_id}">${hasParent}${shortId}</span>`;
+        }
+        
         function addLog(entry) {
             if (total === 0) logs.innerHTML = '';
             total++;
@@ -569,11 +663,22 @@ DASHBOARD_HTML = """
             wrapper.className = 'log-wrapper';
             wrapper.id = 'entry-' + entry.id;
             
+            // Track trace groups
+            if (entry.trace_id) {
+                if (!traceGroups.has(entry.trace_id)) {
+                    traceGroups.set(entry.trace_id, []);
+                }
+                traceGroups.get(entry.trace_id).push(entry.id);
+            }
+            
+            const isChild = entry.parent_span_id ? 'trace-child' : '';
+            
             wrapper.innerHTML = `
-                <div class="log" onclick="toggleExpand(this.parentElement)">
+                <div class="log ${isChild}" onclick="toggleExpand(this.parentElement)">
                     <span class="expand-icon">▶</span>
-                    <span class="time">${escapeHtml(entry.timestamp)}</span>
+                    <span class="time">${escapeHtml(entry.timestamp)}${traceBadge(entry)}</span>
                     <span class="method">${escapeHtml(entry.method)}${streamBadge(entry)}</span>
+                    ${providerBadge(entry.provider)}
                     <span class="path">${escapeHtml(entry.path)}</span>
                     <span class="model">${escapeHtml(entry.model || '-')}</span>
                     <span class="status-code ${statusClass(entry.status_code)}">${entry.status_code}</span>
