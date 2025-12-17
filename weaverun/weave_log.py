@@ -13,20 +13,26 @@ def _resolve_project() -> str | None:
     Supported formats:
     - WEAVE_PROJECT=entity/project or WEAVE_PROJECT=project
     - WEAVE_PROJECT_ID=project + optional WEAVE_ENTITY=entity
-    - WANDB_PROJECT_ID=project (legacy)
+    - WANDB_PROJECT=entity/project or WANDB_PROJECT=project (legacy)
+    - WANDB_PROJECT_ID=project + optional WANDB_ENTITY=entity (legacy)
     """
     weave_project = os.getenv("WEAVE_PROJECT")
     if weave_project:
         return weave_project
+    
+    wandb_project = os.getenv("WANDB_PROJECT")
+    if wandb_project:
+        return wandb_project
     
     project_id = os.getenv("WEAVE_PROJECT_ID")
     if project_id:
         entity = os.getenv("WEAVE_ENTITY")
         return f"{entity}/{project_id}" if entity else project_id
     
-    wandb_project = os.getenv("WANDB_PROJECT_ID")
-    if wandb_project:
-        return wandb_project
+    wandb_project_id = os.getenv("WANDB_PROJECT_ID")
+    if wandb_project_id:
+        entity = os.getenv("WANDB_ENTITY")
+        return f"{entity}/{wandb_project_id}" if entity else wandb_project_id
     
     return None
 
@@ -69,8 +75,9 @@ class WeaveLogger:
         if not project:
             if not self._warned:
                 print(
-                    "weaverun: Weave logging disabled (set WEAVE_PROJECT, "
-                    "WEAVE_PROJECT_ID, or WANDB_PROJECT_ID)",
+                    "weaverun: Weave logging disabled (set WEAVE_PROJECT=entity/project, "
+                    "WEAVE_PROJECT_ID + WEAVE_ENTITY, WANDB_PROJECT=entity/project, "
+                    "or WANDB_PROJECT_ID + WANDB_ENTITY)",
                     file=sys.stderr
                 )
                 self._warned = True
