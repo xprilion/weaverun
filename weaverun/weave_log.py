@@ -42,6 +42,9 @@ class LogTask:
     latency_ms: float
     model: str | None
     provider: str | None = None
+    trace_id: str | None = None
+    span_id: str | None = None
+    parent_span_id: str | None = None
     trace_callback: Callable[[str | None], None] | None = None
 
 
@@ -105,6 +108,10 @@ class WeaveLogger:
                     "latency_ms": task.latency_ms,
                     "run_id": os.getenv("WEAVE_RUN_ID"),
                     "app": os.getenv("WEAVE_APP_NAME"),
+                    # Trace context for hierarchical grouping
+                    "trace_id": task.trace_id,
+                    "span_id": task.span_id,
+                    "parent_span_id": task.parent_span_id,
                 },
                 use_stack=False,
             )
@@ -169,6 +176,9 @@ class WeaveLogger:
         latency_ms: float,
         model: str | None,
         provider: str | None = None,
+        trace_id: str | None = None,
+        span_id: str | None = None,
+        parent_span_id: str | None = None,
         trace_callback: Callable[[str | None], None] | None = None,
     ):
         """Queue a log entry for async processing. Non-blocking, fire-and-forget."""
@@ -181,6 +191,9 @@ class WeaveLogger:
             latency_ms=latency_ms,
             model=model,
             provider=provider,
+            trace_id=trace_id,
+            span_id=span_id,
+            parent_span_id=parent_span_id,
             trace_callback=trace_callback,
         )
         try:

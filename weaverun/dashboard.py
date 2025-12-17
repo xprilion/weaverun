@@ -31,6 +31,10 @@ class LogEntry:
     request_body: dict | list | None
     response_body: dict | list | None
     provider: str | None = None
+    # Trace context for hierarchical grouping
+    trace_id: str | None = None       # Groups related calls together
+    span_id: str | None = None        # This call's unique span
+    parent_span_id: str | None = None # Parent call's span (for tree structure)
 
 
 @dataclass
@@ -53,9 +57,15 @@ def add_log(
     request_body: dict | list | None = None,
     response_body: dict | list | None = None,
     provider: str | None = None,
+    trace_id: str | None = None,
+    span_id: str | None = None,
+    parent_span_id: str | None = None,
 ) -> str:
     """Add log entry and notify subscribers. Returns the entry ID."""
     entry_id = str(uuid.uuid4())[:8]
+    # Generate span_id if not provided (use entry_id)
+    if span_id is None:
+        span_id = entry_id
     entry = LogEntry(
         id=entry_id,
         timestamp=datetime.now().strftime("%H:%M:%S"),
@@ -70,6 +80,9 @@ def add_log(
         request_body=request_body,
         response_body=response_body,
         provider=provider,
+        trace_id=trace_id,
+        span_id=span_id,
+        parent_span_id=parent_span_id,
     )
     _logs.append(entry)
     _logs_by_id[entry_id] = entry
@@ -482,6 +495,46 @@ DASHBOARD_HTML = """
             color: #52525b;
         }
         
+        /* Trace grouping styles */
+        .trace-badge {
+            font-size: 9px;
+            padding: 1px 4px;
+            border-radius: 3px;
+            background: #1e293b;
+            color: #64748b;
+            font-family: monospace;
+            margin-left: 8px;
+        }
+        
+        .trace-group {
+            border-left: 2px solid #3b82f6;
+            margin-left: 8px;
+            padding-left: 8px;
+        }
+        
+        .trace-child {
+            position: relative;
+        }
+        
+        .trace-child::before {
+            content: '';
+            position: absolute;
+            left: -10px;
+            top: 50%;
+            width: 8px;
+            height: 1px;
+            background: #3b82f6;
+        }
+        
+        .trace-connector {
+            width: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #3b82f6;
+            font-size: 10px;
+        }
+        
         @media (max-width: 900px) {
             .log {
                 grid-template-columns: 24px 1fr auto auto;
@@ -591,6 +644,16 @@ DASHBOARD_HTML = """
             wrapper.classList.toggle('expanded');
         }
         
+        // Track traces for grouping
+        const traceGroups = new Map();
+        
+        function traceBadge(entry) {
+            if (!entry.trace_id) return '';
+            const shortId = entry.trace_id.substring(0, 8);
+            const hasParent = entry.parent_span_id ? ' ↳' : '';
+            return `<span class="trace-badge" title="Trace: ${entry.trace_id}">${hasParent}${shortId}</span>`;
+        }
+        
         function addLog(entry) {
             if (total === 0) logs.innerHTML = '';
             total++;
@@ -600,10 +663,20 @@ DASHBOARD_HTML = """
             wrapper.className = 'log-wrapper';
             wrapper.id = 'entry-' + entry.id;
             
+            // Track trace groups
+            if (entry.trace_id) {
+                if (!traceGroups.has(entry.trace_id)) {
+                    traceGroups.set(entry.trace_id, []);
+                }
+                traceGroups.get(entry.trace_id).push(entry.id);
+            }
+            
+            const isChild = entry.parent_span_id ? 'trace-child' : '';
+            
             wrapper.innerHTML = `
-                <div class="log" onclick="toggleExpand(this.parentElement)">
+                <div class="log ${isChild}" onclick="toggleExpand(this.parentElement)">
                     <span class="expand-icon">▶</span>
-                    <span class="time">${escapeHtml(entry.timestamp)}</span>
+                    <span class="time">${escapeHtml(entry.timestamp)}${traceBadge(entry)}</span>
                     <span class="method">${escapeHtml(entry.method)}${streamBadge(entry)}</span>
                     ${providerBadge(entry.provider)}
                     <span class="path">${escapeHtml(entry.path)}</span>

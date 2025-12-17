@@ -54,17 +54,28 @@ BUILTIN_PROVIDERS: list[ProviderPattern] = [
     ProviderPattern(
         name="openai",
         path_patterns=[
+            # Chat & Completions
             r"/v1/chat/completions",
             r"/v1/completions",
             r"/v1/responses",
             r"/v1/embeddings",
+            # Assistants API
+            r"/v1/assistants",
+            r"/v1/threads",
+            r"/v1/threads/.+/messages",
+            r"/v1/threads/.+/runs",
+            # Audio
             r"/v1/audio/transcriptions",
             r"/v1/audio/translations",
             r"/v1/audio/speech",
+            # Images
             r"/v1/images/generations",
             r"/v1/images/edits",
             r"/v1/images/variations",
+            # Other
             r"/v1/moderations",
+            r"/v1/files",
+            r"/v1/batches",
             # Without /v1 prefix (some compatible APIs)
             r"/chat/completions$",
             r"/completions$",
@@ -275,6 +286,22 @@ BUILTIN_PROVIDERS: list[ProviderPattern] = [
             r"localhost",
             r"127\.0\.0\.1",
             r".*:11434",
+        ],
+        is_regex=True,
+    ),
+    
+    # Google ADK (Agent Development Kit)
+    ProviderPattern(
+        name="google_adk",
+        path_patterns=[
+            r"/run$",
+            r"/run_sse$",
+            r"/api/run$",
+            r"/api/run_sse$",
+        ],
+        host_patterns=[
+            r"localhost",
+            r"127\.0\.0\.1",
         ],
         is_regex=True,
     ),

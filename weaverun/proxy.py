@@ -12,6 +12,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .dashboard import router as dashboard_router, add_log as dashboard_add_log, update_trace_url, update_log_entry
 from .detect import is_capturable_endpoint
+from .trace_context import extract_trace_context
 from .upstream import resolve_upstream, extract_path
 from .weave_log import WeaveLogger
 
@@ -174,6 +175,9 @@ async def _do_proxy(request: Request, upstream_url: str):
         resp_json = _parse_json(content)
         model = req_json.get("model") if isinstance(req_json, dict) else None
         
+        # Extract trace context for hierarchical grouping
+        trace_ctx = extract_trace_context(headers, req_json)
+        
         # Log to dashboard immediately (in-memory, no latency)
         # trace_pending=True shows spinning donut while Weave logs in background
         entry_id = dashboard_add_log(
@@ -187,6 +191,9 @@ async def _do_proxy(request: Request, upstream_url: str):
             request_body=req_json,
             response_body=resp_json,
             provider=provider,
+            trace_id=trace_ctx.trace_id,
+            span_id=trace_ctx.span_id,
+            parent_span_id=trace_ctx.parent_span_id,
         )
         
         # Queue Weave logging in background (non-blocking)
@@ -201,6 +208,9 @@ async def _do_proxy(request: Request, upstream_url: str):
                 latency_ms=latency_ms,
                 model=model,
                 provider=provider,
+                trace_id=trace_ctx.trace_id,
+                span_id=trace_ctx.span_id,
+                parent_span_id=trace_ctx.parent_span_id,
                 trace_callback=lambda url, eid=entry_id: update_trace_url(eid, url),
             )
 
@@ -226,6 +236,9 @@ async def _do_streaming_proxy(
     req_json = _parse_json(body) if should_capture else None
     model = req_json.get("model") if isinstance(req_json, dict) else None
     
+    # Extract trace context for hierarchical grouping
+    trace_ctx = extract_trace_context(headers, req_json) if should_capture else None
+    
     # For streaming, we log immediately with placeholder response
     # and update with full content when stream completes
     entry_id = None
@@ -241,6 +254,9 @@ async def _do_streaming_proxy(
             request_body=req_json,
             response_body={"_streaming": True, "_status": "in_progress"},
             provider=provider,
+            trace_id=trace_ctx.trace_id if trace_ctx else None,
+            span_id=trace_ctx.span_id if trace_ctx else None,
+            parent_span_id=trace_ctx.parent_span_id if trace_ctx else None,
         )
     
     # State shared between generator and completion callback
@@ -311,6 +327,9 @@ async def _do_streaming_proxy(
                         latency_ms=ttfb,
                         model=model,
                         provider=provider,
+                        trace_id=trace_ctx.trace_id if trace_ctx else None,
+                        span_id=trace_ctx.span_id if trace_ctx else None,
+                        parent_span_id=trace_ctx.parent_span_id if trace_ctx else None,
                         trace_callback=lambda url, eid=entry_id: update_trace_url(eid, url),
                     )
     
