@@ -100,6 +100,33 @@ def update_trace_url(entry_id: str, trace_url: str | None):
                 pass
 
 
+def update_log_entry(
+    entry_id: str,
+    *,
+    response_body: dict | list | None = None,
+    latency_ms: float | None = None,
+    status_code: int | None = None,
+):
+    """Update a log entry's fields and notify subscribers."""
+    entry = _logs_by_id.get(entry_id)
+    if not entry:
+        return
+    
+    if response_body is not None:
+        entry.response_body = response_body
+    if latency_ms is not None:
+        entry.latency_ms = round(latency_ms, 1)
+    if status_code is not None:
+        entry.status_code = status_code
+    
+    # Send full entry update to subscribers
+    for queue in _subscribers:
+        try:
+            queue.put_nowait({"type": "log_update", "data": entry})
+        except asyncio.QueueFull:
+            pass
+
+
 async def _event_stream() -> AsyncGenerator[str, None]:
     """SSE event stream for real-time updates."""
     queue: asyncio.Queue = asyncio.Queue(maxsize=50)
@@ -115,6 +142,8 @@ async def _event_stream() -> AsyncGenerator[str, None]:
             msg = await queue.get()
             if msg["type"] == "log":
                 payload = {"type": "log", **asdict(msg["data"])}
+            elif msg["type"] == "log_update":
+                payload = {"type": "log_update", **asdict(msg["data"])}
             else:
                 payload = {"type": "trace_update", "id": msg["data"].id, "trace_url": msg["data"].trace_url}
             yield f"data: {json.dumps(payload)}\n\n"
@@ -314,6 +343,26 @@ DASHBOARD_HTML = """
             to { transform: rotate(360deg); }
         }
         
+        .stream-badge {
+            font-size: 9px;
+            padding: 1px 4px;
+            border-radius: 3px;
+            background: #312e81;
+            color: #a78bfa;
+            margin-left: 4px;
+            vertical-align: middle;
+        }
+        
+        .streaming-indicator {
+            display: inline-block;
+            width: 6px;
+            height: 6px;
+            background: #8b5cf6;
+            border-radius: 50%;
+            margin-left: 4px;
+            animation: pulse 1s infinite;
+        }
+        
         .details {
             display: none;
             background: #111114;
@@ -442,6 +491,19 @@ DASHBOARD_HTML = """
             return 'status-5xx';
         }
         
+        function isStreaming(entry) {
+            return entry.request_body && entry.request_body.stream === true;
+        }
+        
+        function streamBadge(entry) {
+            if (!isStreaming(entry)) return '';
+            const resp = entry.response_body;
+            if (resp && resp._streaming && resp._status === 'in_progress') {
+                return '<span class="streaming-indicator" title="Streaming"></span>';
+            }
+            return '<span class="stream-badge">stream</span>';
+        }
+        
         function traceLink(entry) {
             if (entry.trace_url) {
                 return `<a href="${entry.trace_url}" target="_blank" class="trace-link" onclick="event.stopPropagation()">🍩 trace</a>`;
@@ -511,7 +573,7 @@ DASHBOARD_HTML = """
                 <div class="log" onclick="toggleExpand(this.parentElement)">
                     <span class="expand-icon">▶</span>
                     <span class="time">${escapeHtml(entry.timestamp)}</span>
-                    <span class="method">${escapeHtml(entry.method)}</span>
+                    <span class="method">${escapeHtml(entry.method)}${streamBadge(entry)}</span>
                     <span class="path">${escapeHtml(entry.path)}</span>
                     <span class="model">${escapeHtml(entry.model || '-')}</span>
                     <span class="status-code ${statusClass(entry.status_code)}">${entry.status_code}</span>
@@ -562,9 +624,48 @@ DASHBOARD_HTML = """
             }
         }
         
+        function updateLogEntry(entry) {
+            const wrapper = document.getElementById('entry-' + entry.id);
+            if (!wrapper) return;
+            
+            // Update latency
+            const latencyEl = wrapper.querySelector('.latency');
+            if (latencyEl) latencyEl.textContent = entry.latency_ms + 'ms';
+            
+            // Update status code
+            const statusEl = wrapper.querySelector('.status-code');
+            if (statusEl) {
+                statusEl.textContent = entry.status_code;
+                statusEl.className = 'status-code ' + statusClass(entry.status_code);
+            }
+            
+            // Update method badge (remove streaming indicator)
+            const methodEl = wrapper.querySelector('.method');
+            if (methodEl) {
+                methodEl.innerHTML = escapeHtml(entry.method) + streamBadge(entry);
+            }
+            
+            // Update response panel
+            const panels = wrapper.querySelectorAll('.panel');
+            if (panels.length >= 2) {
+                const responsePanel = panels[1];
+                const jsonView = responsePanel.querySelector('.json-view');
+                if (jsonView) {
+                    jsonView.innerHTML = syntaxHighlight(entry.response_body);
+                }
+                // Update copy button handler
+                const copyBtn = responsePanel.querySelector('.copy-btn');
+                if (copyBtn) {
+                    copyBtn.onclick = () => copyToClipboard(copyBtn, entry.response_body);
+                }
+            }
+        }
+        
         function handleEvent(data) {
             if (data.type === 'log') {
                 addLog(data);
+            } else if (data.type === 'log_update') {
+                updateLogEntry(data);
             } else if (data.type === 'trace_update') {
                 updateTraceUrl(data.id, data.trace_url);
             }

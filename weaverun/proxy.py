@@ -2,13 +2,15 @@ import json
 import sys
 import time
 from contextlib import asynccontextmanager
+from typing import AsyncGenerator
 from urllib.parse import urlparse
 
 import httpx
 from fastapi import FastAPI, Request, Response
+from starlette.responses import StreamingResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from .dashboard import router as dashboard_router, add_log as dashboard_add_log, update_trace_url
+from .dashboard import router as dashboard_router, add_log as dashboard_add_log, update_trace_url, update_log_entry
 from .detect import is_openai_compatible
 from .upstream import resolve_upstream, extract_path
 from .weave_log import WeaveLogger
@@ -56,6 +58,77 @@ def _filter_headers(headers: httpx.Headers) -> dict[str, str]:
     return {k: v for k, v in headers.items() if k.lower() not in HOP_BY_HOP_HEADERS}
 
 
+def _is_streaming_request(body: bytes) -> bool:
+    """Check if request has stream: true."""
+    try:
+        data = json.loads(body)
+        return isinstance(data, dict) and data.get("stream") is True
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return False
+
+
+def _parse_sse_chunks(chunks: list[bytes]) -> dict | None:
+    """
+    Parse SSE chunks from streaming response and reconstruct the complete response.
+    Returns a dict with aggregated content for logging.
+    """
+    all_content = ""
+    model = None
+    finish_reason = None
+    usage = None
+    response_id = None
+    
+    for chunk in chunks:
+        try:
+            text = chunk.decode("utf-8", errors="ignore")
+            for line in text.split("\n"):
+                line = line.strip()
+                if line.startswith("data: "):
+                    data_str = line[6:]
+                    if data_str == "[DONE]":
+                        continue
+                    try:
+                        data = json.loads(data_str)
+                        if not response_id:
+                            response_id = data.get("id")
+                        if not model:
+                            model = data.get("model")
+                        
+                        # Extract content from choices
+                        choices = data.get("choices", [])
+                        for choice in choices:
+                            delta = choice.get("delta", {})
+                            content = delta.get("content", "")
+                            if content:
+                                all_content += content
+                            if choice.get("finish_reason"):
+                                finish_reason = choice.get("finish_reason")
+                        
+                        # Some APIs include usage in the final chunk
+                        if data.get("usage"):
+                            usage = data.get("usage")
+                    except json.JSONDecodeError:
+                        pass
+        except Exception:
+            pass
+    
+    if not all_content and not response_id:
+        return None
+    
+    # Reconstruct a response-like object for logging
+    return {
+        "id": response_id,
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": all_content},
+            "finish_reason": finish_reason,
+        }],
+        "usage": usage,
+        "_streamed": True,
+    }
+
+
 async def _do_proxy(request: Request, upstream_url: str):
     """Perform the actual proxy request."""
     api_path = extract_path(upstream_url)
@@ -63,8 +136,19 @@ async def _do_proxy(request: Request, upstream_url: str):
     body = await request.body()
     headers = {k: v for k, v in request.headers.items() if k.lower() not in ("host", "content-length")}
     
+    # Check if this is a streaming request
+    is_streaming = _is_streaming_request(body)
+    is_openai = is_openai_compatible(api_path)
+    
     start = time.perf_counter()
 
+    if is_streaming:
+        # Handle streaming request
+        return await _do_streaming_proxy(
+            request, upstream_url, api_path, body, headers, start, is_openai
+        )
+    
+    # Non-streaming request
     try:
         resp = await _client.request(
             method=request.method,
@@ -85,7 +169,7 @@ async def _do_proxy(request: Request, upstream_url: str):
         return Response(content=b"Request failed", status_code=502)
 
     # Log OpenAI-compatible calls
-    if is_openai_compatible(api_path):
+    if is_openai:
         req_json = _parse_json(body)
         resp_json = _parse_json(content)
         model = req_json.get("model") if isinstance(req_json, dict) else None
@@ -123,6 +207,117 @@ async def _do_proxy(request: Request, upstream_url: str):
         status_code=resp.status_code,
         headers=_filter_headers(resp.headers),
         media_type=resp.headers.get("content-type"),
+    )
+
+
+async def _do_streaming_proxy(
+    request: Request,
+    upstream_url: str,
+    api_path: str,
+    body: bytes,
+    headers: dict,
+    start: float,
+    is_openai: bool,
+):
+    """Handle streaming proxy request."""
+    req_json = _parse_json(body) if is_openai else None
+    model = req_json.get("model") if isinstance(req_json, dict) else None
+    
+    # For streaming, we log immediately with placeholder response
+    # and update with full content when stream completes
+    entry_id = None
+    if is_openai:
+        entry_id = dashboard_add_log(
+            path=api_path,
+            model=model,
+            status_code=200,  # Optimistic, will be accurate for most cases
+            latency_ms=0,  # Will update when first chunk arrives
+            upstream=upstream_url,
+            trace_url=None,
+            trace_pending=_logger is not None,
+            request_body=req_json,
+            response_body={"_streaming": True, "_status": "in_progress"},
+        )
+    
+    # State shared between generator and completion callback
+    state = {
+        "chunks": [],
+        "status_code": 200,
+        "headers": {},
+        "first_chunk_time": None,
+        "error": None,
+    }
+    
+    async def stream_generator() -> AsyncGenerator[bytes, None]:
+        """Stream chunks from upstream to client while accumulating for logging."""
+        try:
+            async with _client.stream(
+                method=request.method,
+                url=upstream_url,
+                headers=headers,
+                content=body,
+            ) as resp:
+                state["status_code"] = resp.status_code
+                state["headers"] = dict(resp.headers)
+                
+                async for chunk in resp.aiter_bytes():
+                    if state["first_chunk_time"] is None:
+                        state["first_chunk_time"] = time.perf_counter()
+                    state["chunks"].append(chunk)
+                    yield chunk
+                    
+        except httpx.TimeoutException:
+            state["error"] = "timeout"
+            yield b"data: {\"error\": \"Upstream timeout\"}\n\n"
+        except httpx.ConnectError as e:
+            state["error"] = "connect"
+            yield b"data: {\"error\": \"Connection failed\"}\n\n"
+        except Exception as e:
+            state["error"] = str(e)
+            yield b"data: {\"error\": \"Request failed\"}\n\n"
+        finally:
+            # Log completed stream
+            if is_openai and entry_id:
+                end_time = time.perf_counter()
+                ttfb = ((state["first_chunk_time"] or end_time) - start) * 1000
+                total_time = (end_time - start) * 1000
+                
+                # Parse accumulated chunks to reconstruct response
+                resp_json = _parse_sse_chunks(state["chunks"])
+                if resp_json:
+                    resp_json["_ttfb_ms"] = round(ttfb, 1)
+                    resp_json["_total_ms"] = round(total_time, 1)
+                
+                # Update dashboard entry with final response (sends SSE update)
+                update_log_entry(
+                    entry_id,
+                    response_body=resp_json,
+                    latency_ms=ttfb,
+                    status_code=state["status_code"],
+                )
+                
+                # Queue Weave logging
+                if _logger:
+                    _logger.log_async(
+                        path=api_path,
+                        upstream=upstream_url,
+                        request_json=req_json,
+                        response_json=resp_json,
+                        status_code=state["status_code"],
+                        latency_ms=ttfb,
+                        model=model,
+                        trace_callback=lambda url, eid=entry_id: update_trace_url(eid, url),
+                    )
+    
+    # Return streaming response immediately
+    return StreamingResponse(
+        stream_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 
