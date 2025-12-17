@@ -8,7 +8,7 @@ import httpx
 from fastapi import FastAPI, Request, Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from .dashboard import router as dashboard_router, add_log as dashboard_add_log
+from .dashboard import router as dashboard_router, add_log as dashboard_add_log, update_trace_url
 from .detect import is_openai_compatible
 from .upstream import resolve_upstream, extract_path
 from .weave_log import WeaveLogger
@@ -31,7 +31,9 @@ async def lifespan(inner_app: FastAPI):
         follow_redirects=True,
     )
     _logger = WeaveLogger()
+    _logger.start()  # Start background logging worker
     yield
+    await _logger.stop()  # Drain queue and stop worker
     await _client.aclose()
 
 
@@ -88,9 +90,24 @@ async def _do_proxy(request: Request, upstream_url: str):
         resp_json = _parse_json(content)
         model = req_json.get("model") if isinstance(req_json, dict) else None
         
-        trace_url = None
+        # Log to dashboard immediately (in-memory, no latency)
+        # trace_pending=True shows spinning donut while Weave logs in background
+        entry_id = dashboard_add_log(
+            path=api_path,
+            model=model,
+            status_code=resp.status_code,
+            latency_ms=latency_ms,
+            upstream=upstream_url,
+            trace_url=None,
+            trace_pending=_logger is not None,
+            request_body=req_json,
+            response_body=resp_json,
+        )
+        
+        # Queue Weave logging in background (non-blocking)
+        # Callback updates dashboard with trace URL when ready
         if _logger:
-            trace_url = _logger.log(
+            _logger.log_async(
                 path=api_path,
                 upstream=upstream_url,
                 request_json=req_json,
@@ -98,16 +115,8 @@ async def _do_proxy(request: Request, upstream_url: str):
                 status_code=resp.status_code,
                 latency_ms=latency_ms,
                 model=model,
+                trace_callback=lambda url, eid=entry_id: update_trace_url(eid, url),
             )
-        
-        dashboard_add_log(
-            path=api_path,
-            model=model,
-            status_code=resp.status_code,
-            latency_ms=latency_ms,
-            upstream=upstream_url,
-            trace_url=trace_url,
-        )
 
     return Response(
         content=content,

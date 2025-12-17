@@ -1,7 +1,8 @@
 import asyncio
 import json
+import uuid
 from collections import deque
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from datetime import datetime
 from typing import AsyncGenerator
 
@@ -11,11 +12,13 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 router = APIRouter()
 
 _logs: deque = deque(maxlen=100)
+_logs_by_id: dict[str, "LogEntry"] = {}
 _subscribers: list[asyncio.Queue] = []
 
 
 @dataclass
 class LogEntry:
+    id: str
     timestamp: str
     method: str
     path: str
@@ -24,6 +27,17 @@ class LogEntry:
     latency_ms: float
     upstream: str
     trace_url: str | None
+    trace_pending: bool
+    request_body: dict | list | None
+    response_body: dict | list | None
+
+
+@dataclass
+class TraceUpdate:
+    """Event for updating trace URL on an existing log entry."""
+    type: str = field(default="trace_update", init=False)
+    id: str = ""
+    trace_url: str | None = None
 
 
 def add_log(
@@ -34,9 +48,14 @@ def add_log(
     latency_ms: float,
     upstream: str,
     trace_url: str | None = None,
-):
-    """Add log entry and notify subscribers."""
+    trace_pending: bool = False,
+    request_body: dict | list | None = None,
+    response_body: dict | list | None = None,
+) -> str:
+    """Add log entry and notify subscribers. Returns the entry ID."""
+    entry_id = str(uuid.uuid4())[:8]
     entry = LogEntry(
+        id=entry_id,
         timestamp=datetime.now().strftime("%H:%M:%S"),
         method="POST",
         path=path,
@@ -45,14 +64,40 @@ def add_log(
         latency_ms=round(latency_ms, 1),
         upstream=upstream,
         trace_url=trace_url,
+        trace_pending=trace_pending,
+        request_body=request_body,
+        response_body=response_body,
     )
     _logs.append(entry)
+    _logs_by_id[entry_id] = entry
+    
+    # Clean up old entries from the lookup dict
+    while len(_logs_by_id) > 100:
+        oldest = next(iter(_logs_by_id))
+        del _logs_by_id[oldest]
     
     for queue in _subscribers:
         try:
-            queue.put_nowait(entry)
+            queue.put_nowait({"type": "log", "data": entry})
         except asyncio.QueueFull:
             pass
+    
+    return entry_id
+
+
+def update_trace_url(entry_id: str, trace_url: str | None):
+    """Update trace URL for an existing log entry and notify subscribers."""
+    entry = _logs_by_id.get(entry_id)
+    if entry:
+        entry.trace_url = trace_url
+        entry.trace_pending = False
+        
+        update = TraceUpdate(id=entry_id, trace_url=trace_url)
+        for queue in _subscribers:
+            try:
+                queue.put_nowait({"type": "trace_update", "data": update})
+            except asyncio.QueueFull:
+                pass
 
 
 async def _event_stream() -> AsyncGenerator[str, None]:
@@ -61,12 +106,18 @@ async def _event_stream() -> AsyncGenerator[str, None]:
     _subscribers.append(queue)
     
     try:
+        # Send existing logs
         for entry in _logs:
-            yield f"data: {json.dumps(asdict(entry))}\n\n"
+            payload = {"type": "log", **asdict(entry)}
+            yield f"data: {json.dumps(payload)}\n\n"
         
         while True:
-            entry = await queue.get()
-            yield f"data: {json.dumps(asdict(entry))}\n\n"
+            msg = await queue.get()
+            if msg["type"] == "log":
+                payload = {"type": "log", **asdict(msg["data"])}
+            else:
+                payload = {"type": "trace_update", "id": msg["data"].id, "trace_url": msg["data"].trace_url}
+            yield f"data: {json.dumps(payload)}\n\n"
     finally:
         _subscribers.remove(queue)
 
@@ -155,21 +206,45 @@ DASHBOARD_HTML = """
             gap: 8px;
         }
         
+        .log-wrapper {
+            animation: slideIn 0.2s ease-out;
+        }
+        
         .log {
             display: grid;
-            grid-template-columns: 70px 60px 1fr auto auto auto auto;
+            grid-template-columns: 24px 70px 60px 1fr auto auto auto auto;
             gap: 16px;
             align-items: center;
             padding: 12px 16px;
             background: #18181b;
             border-radius: 8px;
             font-size: 13px;
-            animation: slideIn 0.2s ease-out;
+            cursor: pointer;
+            transition: background 0.15s;
+        }
+        
+        .log:hover {
+            background: #1f1f23;
+        }
+        
+        .log-wrapper.expanded .log {
+            border-radius: 8px 8px 0 0;
         }
         
         @keyframes slideIn {
             from { opacity: 0; transform: translateY(-8px); }
             to { opacity: 1; transform: translateY(0); }
+        }
+        
+        .expand-icon {
+            color: #52525b;
+            font-size: 10px;
+            transition: transform 0.2s;
+            user-select: none;
+        }
+        
+        .log-wrapper.expanded .expand-icon {
+            transform: rotate(90deg);
         }
         
         .time { color: #71717a; }
@@ -228,16 +303,119 @@ DASHBOARD_HTML = """
             color: #52525b;
         }
         
+        .trace-pending {
+            font-size: 12px;
+            display: inline-block;
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+        
+        .details {
+            display: none;
+            background: #111114;
+            border-radius: 0 0 8px 8px;
+            border-top: 1px solid #27272a;
+            overflow: hidden;
+        }
+        
+        .log-wrapper.expanded .details {
+            display: block;
+        }
+        
+        .details-panels {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1px;
+            background: #27272a;
+        }
+        
+        .panel {
+            background: #111114;
+            padding: 16px;
+            max-height: 400px;
+            overflow: auto;
+        }
+        
+        .panel-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 12px;
+        }
+        
+        .panel-title {
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        
+        .panel-title.request {
+            color: #06b6d4;
+        }
+        
+        .panel-title.response {
+            color: #22c55e;
+        }
+        
+        .copy-btn {
+            font-size: 11px;
+            padding: 3px 8px;
+            border: none;
+            border-radius: 4px;
+            background: #27272a;
+            color: #a1a1aa;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        
+        .copy-btn:hover {
+            background: #3f3f46;
+            color: #e4e4e7;
+        }
+        
+        .copy-btn.copied {
+            background: #14532d;
+            color: #4ade80;
+        }
+        
+        .json-view {
+            font-size: 12px;
+            line-height: 1.5;
+            white-space: pre-wrap;
+            word-break: break-all;
+            color: #a1a1aa;
+        }
+        
+        .json-view .key { color: #06b6d4; }
+        .json-view .string { color: #fbbf24; }
+        .json-view .number { color: #a78bfa; }
+        .json-view .boolean { color: #f472b6; }
+        .json-view .null { color: #71717a; }
+        
+        .empty-body {
+            color: #52525b;
+            font-style: italic;
+        }
+        
         .empty {
             text-align: center;
             padding: 48px;
             color: #52525b;
         }
         
-        @media (max-width: 768px) {
+        @media (max-width: 900px) {
             .log {
+                grid-template-columns: 24px 1fr auto auto;
+                gap: 12px;
+            }
+            .log .time, .log .method, .log .path { display: none; }
+            .details-panels {
                 grid-template-columns: 1fr;
-                gap: 8px;
             }
         }
     </style>
@@ -264,11 +442,60 @@ DASHBOARD_HTML = """
             return 'status-5xx';
         }
         
-        function traceLink(url) {
-            if (url) {
-                return `<a href="${url}" target="_blank" class="trace-link">🍩 trace</a>`;
+        function traceLink(entry) {
+            if (entry.trace_url) {
+                return `<a href="${entry.trace_url}" target="_blank" class="trace-link" onclick="event.stopPropagation()">🍩 trace</a>`;
+            }
+            if (entry.trace_pending) {
+                return `<span class="trace-pending" title="Logging to Weave...">🍩</span>`;
             }
             return `<span class="trace-none">-</span>`;
+        }
+        
+        function syntaxHighlight(json) {
+            if (json === null || json === undefined) {
+                return '<span class="empty-body">No body</span>';
+            }
+            const str = JSON.stringify(json, null, 2);
+            return str.replace(/("(\\\\u[a-zA-Z0-9]{4}|\\\\[^u]|[^\\\\"])*"(\\s*:)?|\\b(true|false|null)\\b|-?\\d+(?:\\.\\d*)?(?:[eE][+\\-]?\\d+)?)/g, (match) => {
+                let cls = 'number';
+                if (/^"/.test(match)) {
+                    if (/:$/.test(match)) {
+                        cls = 'key';
+                        match = match.slice(0, -1) + '</span><span>:';
+                    } else {
+                        cls = 'string';
+                    }
+                } else if (/true|false/.test(match)) {
+                    cls = 'boolean';
+                } else if (/null/.test(match)) {
+                    cls = 'null';
+                }
+                return `<span class="${cls}">${match}</span>`;
+            });
+        }
+        
+        function escapeHtml(str) {
+            const div = document.createElement('div');
+            div.textContent = str;
+            return div.innerHTML;
+        }
+        
+        function copyToClipboard(btn, data) {
+            event.stopPropagation();
+            const text = data ? JSON.stringify(data, null, 2) : '';
+            navigator.clipboard.writeText(text).then(() => {
+                btn.classList.add('copied');
+                btn.textContent = 'Copied!';
+                setTimeout(() => {
+                    btn.classList.remove('copied');
+                    btn.textContent = 'Copy';
+                }, 1500);
+            });
+        }
+        
+        function toggleExpand(wrapper) {
+            wrapper.classList.toggle('expanded');
         }
         
         function addLog(entry) {
@@ -276,26 +503,75 @@ DASHBOARD_HTML = """
             total++;
             count.textContent = `${total} request${total === 1 ? '' : 's'}`;
             
-            const el = document.createElement('div');
-            el.className = 'log';
-            el.innerHTML = `
-                <span class="time">${entry.timestamp}</span>
-                <span class="method">${entry.method}</span>
-                <span class="path">${entry.path}</span>
-                <span class="model">${entry.model || '-'}</span>
-                <span class="status-code ${statusClass(entry.status_code)}">${entry.status_code}</span>
-                <span class="latency">${entry.latency_ms}ms</span>
-                ${traceLink(entry.trace_url)}
+            const wrapper = document.createElement('div');
+            wrapper.className = 'log-wrapper';
+            wrapper.id = 'entry-' + entry.id;
+            
+            wrapper.innerHTML = `
+                <div class="log" onclick="toggleExpand(this.parentElement)">
+                    <span class="expand-icon">▶</span>
+                    <span class="time">${escapeHtml(entry.timestamp)}</span>
+                    <span class="method">${escapeHtml(entry.method)}</span>
+                    <span class="path">${escapeHtml(entry.path)}</span>
+                    <span class="model">${escapeHtml(entry.model || '-')}</span>
+                    <span class="status-code ${statusClass(entry.status_code)}">${entry.status_code}</span>
+                    <span class="latency">${entry.latency_ms}ms</span>
+                    <span class="trace-slot" data-id="${entry.id}">${traceLink(entry)}</span>
+                </div>
+                <div class="details">
+                    <div class="details-panels">
+                        <div class="panel">
+                            <div class="panel-header">
+                                <span class="panel-title request">Request</span>
+                                <button class="copy-btn" id="copy-req-${entry.id}">Copy</button>
+                            </div>
+                            <div class="json-view">${syntaxHighlight(entry.request_body)}</div>
+                        </div>
+                        <div class="panel">
+                            <div class="panel-header">
+                                <span class="panel-title response">Response</span>
+                                <button class="copy-btn" id="copy-res-${entry.id}">Copy</button>
+                            </div>
+                            <div class="json-view">${syntaxHighlight(entry.response_body)}</div>
+                        </div>
+                    </div>
+                </div>
             `;
-            logs.insertBefore(el, logs.firstChild);
+            
+            logs.insertBefore(wrapper, logs.firstChild);
+            
+            // Attach copy handlers after insertion
+            const reqBtn = document.getElementById('copy-req-' + entry.id);
+            const resBtn = document.getElementById('copy-res-' + entry.id);
+            if (reqBtn) reqBtn.onclick = () => copyToClipboard(reqBtn, entry.request_body);
+            if (resBtn) resBtn.onclick = () => copyToClipboard(resBtn, entry.response_body);
             
             while (logs.children.length > 50) {
                 logs.removeChild(logs.lastChild);
             }
         }
         
+        function updateTraceUrl(id, traceUrl) {
+            const slot = document.querySelector(`.trace-slot[data-id="${id}"]`);
+            if (slot) {
+                if (traceUrl) {
+                    slot.innerHTML = `<a href="${traceUrl}" target="_blank" class="trace-link" onclick="event.stopPropagation()">🍩 trace</a>`;
+                } else {
+                    slot.innerHTML = `<span class="trace-none">-</span>`;
+                }
+            }
+        }
+        
+        function handleEvent(data) {
+            if (data.type === 'log') {
+                addLog(data);
+            } else if (data.type === 'trace_update') {
+                updateTraceUrl(data.id, data.trace_url);
+            }
+        }
+        
         const evtSource = new EventSource('/__weaverun__/events');
-        evtSource.onmessage = (e) => addLog(JSON.parse(e.data));
+        evtSource.onmessage = (e) => handleEvent(JSON.parse(e.data));
         evtSource.onerror = () => console.log('SSE reconnecting...');
     </script>
 </body>
