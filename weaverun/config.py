@@ -313,6 +313,7 @@ class Config:
     """WeaveRun configuration."""
     providers: list[ProviderPattern] = field(default_factory=list)
     capture_all_requests: bool = False
+    config_path: str | None = None
     
     def is_capturable(self, path: str, host: str = "") -> tuple[bool, str | None]:
         """
@@ -407,6 +408,10 @@ def load_config() -> Config:
         disabled = config_data.get("disable_providers", [])
         if disabled:
             config.providers = [p for p in config.providers if p.name not in disabled]
+        
+        config.config_path = str(config_path)
+    else:
+        config.config_path = None
     
     return config
 
