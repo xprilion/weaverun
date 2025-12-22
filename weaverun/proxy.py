@@ -10,6 +10,7 @@ from fastapi import FastAPI, Request, Response
 from starlette.responses import StreamingResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from .config import is_debug_mode
 from .dashboard import router as dashboard_router, add_log as dashboard_add_log, update_trace_url, update_log_entry
 from .detect import is_capturable_endpoint
 from .trace_context import extract_trace_context
@@ -178,8 +179,12 @@ async def _do_proxy(request: Request, upstream_url: str):
         # Extract trace context for hierarchical grouping
         trace_ctx = extract_trace_context(headers, req_json)
         
+        # Check if we're in debug mode (observe without logging to Weave)
+        debug = is_debug_mode()
+        
         # Log to dashboard immediately (in-memory, no latency)
         # trace_pending=True shows spinning donut while Weave logs in background
+        # In debug mode, trace_pending=False since we won't be logging
         entry_id = dashboard_add_log(
             path=api_path,
             model=model,
@@ -187,18 +192,20 @@ async def _do_proxy(request: Request, upstream_url: str):
             latency_ms=latency_ms,
             upstream=upstream_url,
             trace_url=None,
-            trace_pending=_logger is not None,
+            trace_pending=_logger is not None and not debug,
             request_body=req_json,
             response_body=resp_json,
             provider=provider,
             trace_id=trace_ctx.trace_id,
             span_id=trace_ctx.span_id,
             parent_span_id=trace_ctx.parent_span_id,
+            debug_mode=debug,
         )
         
         # Queue Weave logging in background (non-blocking)
+        # Skip logging in debug mode - just observe traffic
         # Callback updates dashboard with trace URL when ready
-        if _logger:
+        if _logger and not debug:
             _logger.log_async(
                 path=api_path,
                 upstream=upstream_url,
@@ -239,6 +246,9 @@ async def _do_streaming_proxy(
     # Extract trace context for hierarchical grouping
     trace_ctx = extract_trace_context(headers, req_json) if should_capture else None
     
+    # Check if we're in debug mode (observe without logging to Weave)
+    debug = is_debug_mode() if should_capture else False
+    
     # For streaming, we log immediately with placeholder response
     # and update with full content when stream completes
     entry_id = None
@@ -250,13 +260,14 @@ async def _do_streaming_proxy(
             latency_ms=0,  # Will update when first chunk arrives
             upstream=upstream_url,
             trace_url=None,
-            trace_pending=_logger is not None,
+            trace_pending=_logger is not None and not debug,
             request_body=req_json,
             response_body={"_streaming": True, "_status": "in_progress"},
             provider=provider,
             trace_id=trace_ctx.trace_id if trace_ctx else None,
             span_id=trace_ctx.span_id if trace_ctx else None,
             parent_span_id=trace_ctx.parent_span_id if trace_ctx else None,
+            debug_mode=debug,
         )
     
     # State shared between generator and completion callback
@@ -316,8 +327,8 @@ async def _do_streaming_proxy(
                     status_code=state["status_code"],
                 )
                 
-                # Queue Weave logging
-                if _logger:
+                # Queue Weave logging (skip in debug mode)
+                if _logger and not debug:
                     _logger.log_async(
                         path=api_path,
                         upstream=upstream_url,

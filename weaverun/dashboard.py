@@ -38,6 +38,8 @@ class LogEntry:
     trace_id: str | None = None       # Groups related calls together
     span_id: str | None = None        # This call's unique span
     parent_span_id: str | None = None # Parent call's span (for tree structure)
+    # Debug mode indicator
+    debug_mode: bool = False          # True when in debug mode (would-be-logged)
 
 
 @dataclass
@@ -63,6 +65,7 @@ def add_log(
     trace_id: str | None = None,
     span_id: str | None = None,
     parent_span_id: str | None = None,
+    debug_mode: bool = False,
 ) -> str:
     """Add log entry and notify subscribers. Returns the entry ID."""
     entry_id = str(uuid.uuid4())[:8]
@@ -86,6 +89,7 @@ def add_log(
         trace_id=trace_id,
         span_id=span_id,
         parent_span_id=parent_span_id,
+        debug_mode=debug_mode,
     )
     _logs.append(entry)
     _logs_by_id[entry_id] = entry
@@ -198,6 +202,7 @@ async def get_dashboard_config():
     return JSONResponse({
         "capture_all_requests": cfg.capture_all_requests,
         "config_path": cfg.config_path,
+        "debug": cfg.debug,
         "providers": [
             {
                 "name": p.name,

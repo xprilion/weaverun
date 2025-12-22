@@ -83,6 +83,10 @@ def run(
         False, "--proxy-all", "-p",
         help="Route ALL HTTP traffic through proxy (for apps with hardcoded base_url)"
     ),
+    debug: bool = typer.Option(
+        False, "--debug", "-d",
+        help="Debug mode: observe all traffic without logging to Weave"
+    ),
 ):
     """Wrap a command and log OpenAI-compatible API calls to Weave."""
     cmd = ctx.args
@@ -93,6 +97,12 @@ def run(
     if env_has_base_url:
         _log("⚠️  Warning: .env contains OPENAI_BASE_URL which may override proxy settings")
         _log("   For Next.js/Node apps, consider removing it from .env temporarily")
+
+    # Enable debug mode in the config before starting the proxy
+    if debug:
+        from .config import set_debug_mode
+        set_debug_mode(True)
+        _log("Debug mode: observing traffic without Weave logging")
 
     try:
         proxy_port = _find_free_port()
@@ -123,6 +133,10 @@ def run(
     env["OPENAI_BASE_URL"] = f"http://127.0.0.1:{proxy_port}"
     env["WEAVE_RUN_ID"] = str(uuid.uuid4())
     env["WEAVE_APP_NAME"] = cmd[0]
+    
+    # Debug mode - pass to child process as well
+    if debug:
+        env["WEAVERUN_DEBUG"] = "1"
 
     # For apps that hardcode base_url, use HTTP_PROXY to intercept
     if proxy_all:

@@ -235,6 +235,29 @@
             to { transform: rotate(360deg); }
         }
         
+        .trace-debug {
+            font-size: 11px;
+            padding: 2px 8px;
+            border-radius: 4px;
+            background: #422006;
+            color: #fbbf24;
+            border: 1px dashed #a16207;
+        }
+        
+        .debug-badge {
+            font-size: 11px;
+            padding: 3px 8px;
+            border-radius: 4px;
+            background: #422006;
+            color: #fbbf24;
+            border: 1px dashed #a16207;
+            margin-left: 8px;
+        }
+        
+        .log.debug-mode {
+            border-left: 3px solid #fbbf24;
+        }
+        
         .stream-badge {
             font-size: 9px;
             padding: 1px 4px;
@@ -538,6 +561,7 @@
     <div class="header">
         <span class="logo">weaverun</span>
         <span class="status"><span class="dot"></span> live</span>
+        <span class="debug-badge" id="debug-indicator" style="display: none;">DEBUG MODE</span>
         <span class="count" id="count">0 requests</span>
         <div class="header-actions">
             <button class="icon-btn" id="config-btn" title="Show loaded config">⚙️</button>
@@ -590,6 +614,9 @@
         }
         
         function traceLink(entry) {
+            if (entry.debug_mode) {
+                return `<span class="trace-debug" title="Debug mode - would be logged to Weave">would log</span>`;
+            }
             if (entry.trace_url) {
                 return `<a href="${entry.trace_url}" target="_blank" class="trace-link" onclick="event.stopPropagation()">🍩 trace</a>`;
             }
@@ -781,9 +808,10 @@
             }
             
             const isChild = entry.parent_span_id ? 'trace-child' : '';
+            const debugClass = entry.debug_mode ? 'debug-mode' : '';
             
             wrapper.innerHTML = `
-                <div class="log ${isChild}" onclick="toggleExpand(this.parentElement)">
+                <div class="log ${isChild} ${debugClass}" onclick="toggleExpand(this.parentElement)">
                     <span class="expand-icon">▶</span>
                     <span class="time">${escapeHtml(entry.timestamp)}${traceBadge(entry)}</span>
                     <span class="method">${escapeHtml(entry.method)}${streamBadge(entry)}</span>
@@ -943,6 +971,25 @@
             chatToggle.onclick = () => setChatVisibility(!chatVisible);
         }
         setChatVisibility(true);
+        
+        // Check and display debug mode indicator
+        async function checkDebugMode() {
+            try {
+                const res = await fetch('/__weaverun__/config');
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data.debug) {
+                        const indicator = document.getElementById('debug-indicator');
+                        if (indicator) {
+                            indicator.style.display = 'inline-block';
+                        }
+                    }
+                }
+            } catch (e) {
+                // Silently ignore errors
+            }
+        }
+        checkDebugMode();
     </script>
 {% endblock %}
 

@@ -314,6 +314,7 @@ class Config:
     providers: list[ProviderPattern] = field(default_factory=list)
     capture_all_requests: bool = False
     config_path: str | None = None
+    debug: bool = False  # When True, observe traffic without logging to Weave
     
     def is_capturable(self, path: str, host: str = "") -> tuple[bool, str | None]:
         """
@@ -404,6 +405,9 @@ def load_config() -> Config:
         # Check for capture_all setting
         config.capture_all_requests = config_data.get("capture_all_requests", False)
         
+        # Check for debug mode
+        config.debug = config_data.get("debug", False)
+        
         # Check for disabled built-in providers
         disabled = config_data.get("disable_providers", [])
         if disabled:
@@ -412,6 +416,10 @@ def load_config() -> Config:
         config.config_path = str(config_path)
     else:
         config.config_path = None
+    
+    # Environment variable override for debug mode
+    if os.getenv("WEAVERUN_DEBUG", "").lower() in ("1", "true", "yes"):
+        config.debug = True
     
     return config
 
@@ -432,4 +440,15 @@ def reload_config():
     """Force reload of configuration."""
     global _config
     _config = load_config()
+
+
+def set_debug_mode(enabled: bool):
+    """Enable or disable debug mode."""
+    cfg = get_config()
+    cfg.debug = enabled
+
+
+def is_debug_mode() -> bool:
+    """Check if debug mode is enabled."""
+    return get_config().debug
 
